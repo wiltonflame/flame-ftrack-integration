@@ -71,7 +71,7 @@ A comprehensive integration between Autodesk Flame and ftrack Studio for streaml
 
 ```bash
 cd ~
-git clone https://github.com/YOUR_USERNAME/flame-ftrack-integration.git
+git clone https://github.com/wiltonflame/flame-ftrack-integration.git
 cd flame-ftrack-integration
 ```
 
