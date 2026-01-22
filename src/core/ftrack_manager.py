@@ -90,7 +90,69 @@ TYPE_MAPPING = {
     "matchmove": "Tracking",
 }
 
-# Status mapping no longer needed - we use direct ftrack names
+# =============================================================================
+# STATUS NORMALIZATION UTILITIES
+# =============================================================================
+# Different ftrack instances may use different naming conventions for statuses:
+# - Production: "in_progress" (underscore, lowercase)
+# - Test/Other: "In Progress" (space, title case)
+# - Some: "In progress", "IN_PROGRESS", etc.
+#
+# These utilities handle all variations transparently.
+
+def normalize_status_name(status: str) -> str:
+    """
+    Normalize a status name for comparison.
+    
+    Converts any status variation to a canonical form:
+    - Lowercase
+    - Underscores replaced with spaces removed
+    - All whitespace collapsed
+    
+    Examples:
+        "in_progress" -> "inprogress"
+        "In Progress" -> "inprogress"
+        "IN_PROGRESS" -> "inprogress"
+        "pending_review" -> "pendingreview"
+        "Pending Review" -> "pendingreview"
+    
+    Args:
+        status: Status name in any format
+        
+    Returns:
+        Normalized status string for comparison
+    """
+    if not status:
+        return ""
+    # Convert to lowercase, remove underscores and spaces
+    return status.lower().replace("_", "").replace(" ", "")
+
+
+def statuses_match(status1: str, status2: str) -> bool:
+    """
+    Check if two status names refer to the same status.
+    
+    Args:
+        status1: First status name
+        status2: Second status name
+        
+    Returns:
+        True if both statuses normalize to the same value
+    """
+    return normalize_status_name(status1) == normalize_status_name(status2)
+
+
+# Common status canonical names (normalized form -> list of known variations)
+# This helps with logging and debugging
+STATUS_CANONICAL = {
+    "inprogress": ["in_progress", "In Progress", "In progress", "IN_PROGRESS"],
+    "notstarted": ["not_started", "Not Started", "Not started", "NOT_STARTED"],
+    "readytostart": ["ready_to_start", "Ready To Start", "Ready to start"],
+    "pendingreview": ["pending_review", "Pending Review", "Pending review"],
+    "approved": ["approved", "Approved", "APPROVED"],
+    "onhold": ["on_hold", "On Hold", "On hold"],
+    "omitted": ["omitted", "Omitted", "OMITTED"],
+}
 
 
 # =============================================================================
@@ -123,6 +185,9 @@ class FtrackManager:
         self._status_cache = {}
         self._asset_type_cache = {}
         self._server_url = None
+        # Cache for dynamically discovered status names
+        # Key: normalized status name, Value: actual server status name
+        self._discovered_status_cache = {}
     
     # -------------------------------------------------------------------------
     # CONNECTION
@@ -213,6 +278,7 @@ class FtrackManager:
                 self._task_type_cache = {}
                 self._status_cache = {}
                 self._asset_type_cache = {}
+                self._discovered_status_cache = {}
                 
             except Exception as e:
                 logger.warning(f"Could not clear cache: {e}")
@@ -746,26 +812,69 @@ class FtrackManager:
     
     def _get_task_status(self, status_name: str):
         """
-        Get status by name (with cache) - direct search by exact name
+        Get status entity by name with intelligent auto-detection.
+        
+        Handles different naming conventions across ftrack instances:
+        - "pending_review" vs "Pending Review" vs "Pending review"
+        - "in_progress" vs "In Progress" vs "In progress"
+        - etc.
+        
+        Args:
+            status_name: Status name in any format
+            
+        Returns:
+            Status entity or None if not found
         """
         if not self.session:
             return None
         
-        # Cache
+        if not status_name:
+            return None
+        
+        # Check entity cache first (stores actual ftrack entities)
         if status_name in self._status_cache:
             return self._status_cache[status_name]
         
+        # Check if we already discovered the server name for this normalized status
+        normalized = normalize_status_name(status_name)
+        
+        if normalized in self._discovered_status_cache:
+            server_name = self._discovered_status_cache[normalized]
+            if server_name and server_name in self._status_cache:
+                return self._status_cache[server_name]
+        
         try:
-            # Direct search by name
+            # First, try exact match (fast path for when names match exactly)
             status = self.session.query(f'Status where name is "{status_name}"').first()
             
             if status:
                 self._status_cache[status_name] = status
-                logger.info(f"Status found: '{status_name}'")
+                self._discovered_status_cache[normalized] = status_name
+                logger.info(f"Status found (exact match): '{status_name}'")
                 return status
-            else:
-                logger.warning(f"Status not found: '{status_name}'")
-                return None
+            
+            # Exact match failed - use intelligent discovery
+            logger.info(f"Status '{status_name}' not found exactly, searching for equivalent...")
+            
+            # Query all statuses and find matching one
+            all_statuses = self.session.query('Status').all()
+            
+            for s in all_statuses:
+                s_name = s.get('name', '') if hasattr(s, 'get') else str(s)
+                if normalize_status_name(s_name) == normalized:
+                    # Found it!
+                    self._status_cache[s_name] = s
+                    self._discovered_status_cache[normalized] = s_name
+                    logger.info(f"Status discovered: '{status_name}' -> '{s_name}' (server format)")
+                    return s
+            
+            # Still not found
+            available = [s.get('name', str(s)) for s in all_statuses[:15]]
+            logger.warning(
+                f"Status '{status_name}' not found on server. "
+                f"Available statuses (first 15): {available}"
+            )
+            return None
             
         except Exception as e:
             logger.warning(f"Error finding status '{status_name}': {e}")
@@ -863,7 +972,9 @@ class FtrackManager:
             
             # Assign current user if requested
             if assign_current_user:
-                self._assign_current_user_to_task(task)
+                assign_success = self._assign_current_user_to_task(task)
+                if not assign_success:
+                    logger.warning(f"Task '{task_name}' created but user assignment failed")
             
             return task
             
@@ -877,7 +988,11 @@ class FtrackManager:
     
     def _assign_current_user_to_task(self, task) -> bool:
         """
-        Assign the current API user to a task
+        Assign the current API user to a task.
+        
+        Uses multiple strategies to handle different ftrack configurations:
+        1. First tries to use the 'assignments' relationship directly
+        2. Falls back to creating an 'Appointment' entity
         
         Args:
             task: Task entity to assign user to
@@ -886,7 +1001,10 @@ class FtrackManager:
             bool: True if successful
         """
         if not self.session or not task:
+            logger.warning("Cannot assign user: no session or task")
             return False
+        
+        task_name = task.get('name', 'unknown') if hasattr(task, 'get') else str(task)
         
         try:
             # Get current user
@@ -898,22 +1016,132 @@ class FtrackManager:
                 logger.warning(f"Could not find user: {self.session.api_user}")
                 return False
             
-            # Create appointment (assignment)
-            # In ftrack, assignments are done via Appointment entity
-            self.session.create('Appointment', {
-                'context': task,
-                'resource': user
-            })
+            user_name = user.get('username', self.session.api_user)
+            logger.info(f"Assigning user '{user_name}' to task '{task_name}'...")
             
-            self.session.commit()
-            logger.info(f"✓ User '{self.session.api_user}' assigned to task '{task['name']}'")
-            return True
+            # Strategy 1: Try using assignments collection directly
+            # This is the preferred method in newer ftrack versions
+            try:
+                # Check if task has assignments attribute
+                if hasattr(task, 'get') and 'assignments' in task.keys():
+                    # Check if user is already assigned
+                    existing_assignments = task['assignments']
+                    for assignment in existing_assignments:
+                        resource = assignment.get('resource')
+                        if resource and resource.get('id') == user['id']:
+                            logger.info(f"User '{user_name}' already assigned to task '{task_name}'")
+                            return True
+            except Exception as check_err:
+                logger.debug(f"Could not check existing assignments: {check_err}")
+            
+            # Strategy 2: Create Appointment entity (standard ftrack method)
+            try:
+                appointment = self.session.create('Appointment', {
+                    'context': task,
+                    'resource': user,
+                    'type': 'assignment'
+                })
+                self.session.commit()
+                logger.info(f"✓ User '{user_name}' assigned to task '{task_name}' (via Appointment)")
+                return True
+                
+            except Exception as appt_err:
+                logger.debug(f"Appointment creation failed: {appt_err}")
+                # Try without 'type' field (some ftrack versions don't use it)
+                try:
+                    self.session.rollback()
+                    appointment = self.session.create('Appointment', {
+                        'context': task,
+                        'resource': user
+                    })
+                    self.session.commit()
+                    logger.info(f"✓ User '{user_name}' assigned to task '{task_name}' (via Appointment, no type)")
+                    return True
+                except Exception as appt_err2:
+                    logger.debug(f"Appointment without type also failed: {appt_err2}")
+                    self.session.rollback()
+            
+            # Strategy 3: Try allocating resource directly
+            try:
+                task['assignments'].append(
+                    self.session.create('Appointment', {
+                        'resource': user
+                    })
+                )
+                self.session.commit()
+                logger.info(f"✓ User '{user_name}' assigned to task '{task_name}' (via assignments.append)")
+                return True
+            except Exception as alloc_err:
+                logger.debug(f"Direct assignment append failed: {alloc_err}")
+                self.session.rollback()
+            
+            # All strategies failed
+            logger.error(
+                f"Could not assign user '{user_name}' to task '{task_name}'. "
+                "Please check ftrack permissions and schema configuration."
+            )
+            return False
             
         except Exception as e:
-            logger.error(f"Error assigning user to task: {e}")
+            logger.error(f"Error assigning user to task '{task_name}': {e}")
+            import traceback
+            traceback.print_exc()
             if self.session:
-                self.session.rollback()
+                try:
+                    self.session.rollback()
+                except:
+                    pass
             return False
+    
+    def verify_task_assignment(self, task) -> Dict:
+        """
+        Verify if a task has assignments and return details.
+        
+        Useful for debugging assignment issues.
+        
+        Args:
+            task: Task entity to check
+            
+        Returns:
+            Dict with assignment info: {
+                'has_assignments': bool,
+                'assigned_users': list of usernames,
+                'current_user_assigned': bool
+            }
+        """
+        result = {
+            'has_assignments': False,
+            'assigned_users': [],
+            'current_user_assigned': False
+        }
+        
+        if not self.session or not task:
+            return result
+        
+        try:
+            task_id = task.get('id') if hasattr(task, 'get') else task['id']
+            
+            # Query appointments for this task
+            appointments = self.session.query(
+                f'Appointment where context.id is "{task_id}"'
+            ).all()
+            
+            if appointments:
+                result['has_assignments'] = True
+                for appt in appointments:
+                    resource = appt.get('resource')
+                    if resource:
+                        username = resource.get('username', 'unknown')
+                        result['assigned_users'].append(username)
+                        if username == self.session.api_user:
+                            result['current_user_assigned'] = True
+            
+            logger.debug(f"Task assignment verification: {result}")
+            return result
+            
+        except Exception as e:
+            logger.debug(f"Could not verify task assignments: {e}")
+            return result
     
     # -------------------------------------------------------------------------
     # THUMBNAILS
@@ -1417,9 +1645,88 @@ class FtrackManager:
     # TIME TRACKING
     # -------------------------------------------------------------------------
     
+    def _discover_status_name(self, canonical_status: str) -> Optional[str]:
+        """
+        Discover the actual status name used on this ftrack server.
+        
+        Different ftrack instances use different naming conventions:
+        - "in_progress" vs "In Progress" vs "In progress"
+        - "not_started" vs "Not Started" vs "Not started"
+        
+        This method queries the server for all available statuses and finds
+        the one that matches the canonical name (case/underscore insensitive).
+        
+        Args:
+            canonical_status: The status to find (e.g., "in_progress", "In Progress")
+            
+        Returns:
+            The exact status name as used on this server, or None if not found
+        """
+        normalized_target = normalize_status_name(canonical_status)
+        
+        # Check cache first
+        if normalized_target in self._discovered_status_cache:
+            return self._discovered_status_cache[normalized_target]
+        
+        if not self.session:
+            logger.warning("No session available for status discovery")
+            return None
+        
+        try:
+            # Query all available statuses from the server
+            statuses = self.session.query('Status').all()
+            
+            logger.info(f"Discovering status matching '{canonical_status}' from {len(statuses)} available statuses...")
+            
+            for status in statuses:
+                status_name = status.get('name', '') if hasattr(status, 'get') else str(status)
+                
+                if normalize_status_name(status_name) == normalized_target:
+                    # Found it! Cache and return
+                    self._discovered_status_cache[normalized_target] = status_name
+                    logger.info(f"Status discovered: '{canonical_status}' -> '{status_name}' (server format)")
+                    return status_name
+            
+            # Not found - log available statuses for debugging
+            available = [s.get('name', str(s)) for s in statuses[:20]]  # First 20
+            logger.warning(
+                f"Status '{canonical_status}' not found on server. "
+                f"Available statuses (first 20): {available}"
+            )
+            
+            # Cache the negative result as None
+            self._discovered_status_cache[normalized_target] = None
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error discovering status '{canonical_status}': {e}")
+            return None
+    
+    def _get_in_progress_status_name(self) -> Optional[str]:
+        """
+        Get the exact 'in progress' status name for this ftrack server.
+        
+        Convenience method that handles the common case of finding
+        tasks that are "in progress".
+        
+        Returns:
+            The exact status name (e.g., "in_progress" or "In Progress")
+        """
+        # Try common variations
+        result = self._discover_status_name("in_progress")
+        if result:
+            return result
+        
+        # Try alternative
+        result = self._discover_status_name("In Progress")
+        return result
+    
     def get_my_tasks_in_progress(self) -> List[Dict]:
         """
-        Get tasks with status 'in_progress' assigned to current user.
+        Get tasks with status 'in_progress' (or equivalent) assigned to current user.
+        
+        This method automatically discovers the correct status name format
+        used by the ftrack server (handles "in_progress", "In Progress", etc.).
         
         Returns:
             List of task dicts with id, name, project, parent info
@@ -1448,17 +1755,29 @@ class FtrackManager:
             user_id = user['id']
             logger.info(f"Loading in_progress tasks for user: {self.session.api_user}")
             
+            # Discover the correct status name for this ftrack server
+            in_progress_status = self._get_in_progress_status_name()
+            
+            if not in_progress_status:
+                logger.warning(
+                    "Could not find 'in progress' status on this server. "
+                    "Please check your ftrack status configuration."
+                )
+                return []
+            
+            logger.info(f"Using status name: '{in_progress_status}'")
+            
+            # Build query with the discovered status name
             # Filter project.status is "active" (without .name)
-            # Similar to friend's code: 'Project where status is "active"'
             query = (
                 'select id, name, type.name, parent.name, project.name, project.id '
                 'from Task where assignments any (resource.id is "{}") '
-                'and status.name is "in_progress" '
+                'and status.name is "{}" '
                 'and project.status is "active" '
                 'limit 200'
-            ).format(user_id)
+            ).format(user_id, in_progress_status)
             
-            logger.info(f"Executing query for in_progress tasks (active projects only)...")
+            logger.info(f"Executing query for '{in_progress_status}' tasks (active projects only)...")
             
             tasks = None
             use_python_filter = False
@@ -1474,9 +1793,9 @@ class FtrackManager:
                 fallback_query = (
                     'select id, name, type.name, parent.name, project.name, project.id, project.status.name '
                     'from Task where assignments any (resource.id is "{}") '
-                    'and status.name is "in_progress" '
+                    'and status.name is "{}" '
                     'limit 200'
-                ).format(user_id)
+                ).format(user_id, in_progress_status)
                 
                 tasks = self.session.query(fallback_query).all()
                 use_python_filter = True

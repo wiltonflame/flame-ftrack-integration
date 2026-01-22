@@ -1465,7 +1465,7 @@ class FtrackConnectionMock(FtrackConnection):
                 {'id': 'ts-004', 'name': 'Approved'},
             ],
             'users': [
-                {'id': 'user-001', 'username': 'wilton.silva', 'first_name': 'Wilton', 'last_name': 'Silva', 'email': 'wilton@studio.com'},
+                {'id': 'user-001', 'username': 'demo.user', 'first_name': 'Demo', 'last_name': 'User', 'email': 'demo@studio.com'},
                 {'id': 'user-002', 'username': 'artist01', 'first_name': 'Artist', 'last_name': 'One', 'email': 'artist01@studio.com'},
             ],
             'note_categories': [

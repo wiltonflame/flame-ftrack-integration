@@ -4,7 +4,7 @@ Time Tracker Widget - ftrack time tracking
 Features:
 - Persistent window (doesn't close when changing project)
 - Mini floating window when minimized
-- List of user's "in_progress" tasks
+- List of user's "In Progress" tasks (auto-detects server status format)
 - Timer with start/pause/stop
 - Manual time entry
 - Auto-pause on inactivity
@@ -663,7 +663,7 @@ class TimeTrackerWindow(QtWidgets.QWidget):
         layout.addLayout(controls)
     
     def _create_tasks_list(self, parent):
-        """Create in_progress tasks list"""
+        """Create active tasks list (tasks with 'In Progress' status)"""
         layout = QtWidgets.QVBoxLayout(parent)
         layout.setContentsMargins(5, 10, 5, 5)
         
@@ -674,7 +674,7 @@ class TimeTrackerWindow(QtWidgets.QWidget):
         tasks_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         tasks_label.setText(
             '<span style="color: #5bc0de; font-weight: bold;">'
-            'My Tasks (in_progress)</span>'
+            'My Tasks (In Progress)</span>'
         )
         header_layout.addWidget(tasks_label)
         
@@ -1262,7 +1262,7 @@ class TimeTrackerWindow(QtWidgets.QWidget):
     # =========================================================================
     
     def _load_my_tasks(self):
-        """Load current user's in_progress tasks"""
+        """Load current user's tasks with 'In Progress' status"""
         self.tasks_list.clear()
         self._all_tasks = []
         
@@ -1275,7 +1275,7 @@ class TimeTrackerWindow(QtWidgets.QWidget):
         
         loading_item = QtWidgets.QListWidgetItem("⏳ Loading tasks...")
         self.tasks_list.addItem(loading_item)
-        self.status_label.setText("🔄 Loading your in_progress tasks...")
+        self.status_label.setText("🔄 Loading your active tasks...")
         QtWidgets.QApplication.processEvents()
         
         try:
@@ -1284,7 +1284,7 @@ class TimeTrackerWindow(QtWidgets.QWidget):
             self.tasks_list.clear()
             
             if not tasks:
-                item = QtWidgets.QListWidgetItem("No tasks in_progress found")
+                item = QtWidgets.QListWidgetItem("No tasks in progress found")
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsSelectable)
                 self.tasks_list.addItem(item)
                 self.status_label.setText("No active tasks found for your user")
@@ -1297,7 +1297,7 @@ class TimeTrackerWindow(QtWidgets.QWidget):
             self._update_manual_task_combo()
             
             self.status_label.setText(f"✅ {len(tasks)} tasks loaded")
-            logger.info(f"Loaded {len(tasks)} tasks in_progress")
+            logger.info(f"Loaded {len(tasks)} tasks in progress")
             
         except Exception as e:
             logger.error(f"Error loading tasks: {e}")

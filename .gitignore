@@ -97,6 +97,7 @@ flame_videos/
 *.temp
 *.log
 
+
 # Flame specific
 *.clip
 *.batch
