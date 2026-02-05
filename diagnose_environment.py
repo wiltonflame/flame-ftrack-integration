@@ -190,7 +190,7 @@ def main():
         print(f"  cd {script_dir}")
         if not os.path.exists(venv_dir):
             print("  ./setup_environment.sh")
-        print("  ./run_in_venv.sh test_installation.py")
+        print("  python run_demo.py")
     else:
         print("\n✅ Environment looks good!")
     

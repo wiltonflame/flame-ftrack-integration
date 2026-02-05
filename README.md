@@ -69,10 +69,20 @@ A comprehensive integration between Autodesk Flame and ftrack Studio for streaml
 
 ### 1. Clone the Repository
 
+The repository URL uses hyphens (`flame-ftrack-integration`). The integration code and scripts expect the project folder to be named **`flame_ftrack_integration`** (with underscores). After cloning or downloading the ZIP, rename the folder so paths like `~/flame_ftrack_integration` work correctly.
+
 ```bash
 cd ~
 git clone https://github.com/wiltonflame/flame-ftrack-integration.git
-cd flame-ftrack-integration
+mv flame-ftrack-integration flame_ftrack_integration
+cd flame_ftrack_integration
+```
+
+If you downloaded the **ZIP** from GitHub instead of cloning, the extracted folder is usually `flame-ftrack-integration-main`. Rename it the same way:
+
+```bash
+mv flame-ftrack-integration-main flame_ftrack_integration
+cd flame_ftrack_integration
 ```
 
 ### 2. Install Dependencies
@@ -252,14 +262,14 @@ Test the integration without Flame selection:
 For testing without Flame entirely:
 
 ```bash
-cd flame-ftrack-integration
+cd ~/flame_ftrack_integration
 python run_demo.py
 ```
 
 ## Project Structure
 
 ```
-flame-ftrack-integration/
+flame_ftrack_integration/
 ├── flame_ftrack_hook.py      # Flame Python hook (entry point)
 ├── run_demo.py               # Standalone demo launcher
 ├── diagnose_environment.py   # Environment diagnostic tool

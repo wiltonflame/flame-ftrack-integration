@@ -1316,19 +1316,11 @@ class FtrackManager:
                 self.session.commit()
                 logger.info(f"  Created new asset: {asset['id']}")
             
-            # Get task for version (optional)
-            task = self.session.query(
-                f'Task where parent.id is "{shot["id"]}"'
-            ).first()
-            
-            # Create version
+            # Create version (shot scope only - no task link to avoid changing task status)
             version_data = {
                 'asset': asset,
                 'comment': comment,
             }
-            if task:
-                version_data['task'] = task
-            
             version = self.session.create('AssetVersion', version_data)
             self.session.commit()
             logger.info(f"  Created version: {version['id']}")
@@ -1411,6 +1403,27 @@ class FtrackManager:
         
         logger.warning(f"No video found for {shot_name} in {video_dir}")
         return None
+    
+    def _reapply_task_statuses(self, shot, status_name: str) -> None:
+        """
+        Re-apply desired status to all tasks of the shot except Conform.
+        Safeguard against server-side status changes when a version is published.
+        """
+        if self.is_mock or not self.session or not shot:
+            return
+        status_entity = self._get_task_status(status_name)
+        if not status_entity:
+            return
+        tasks = self.session.query(f'Task where parent.id is "{shot["id"]}"').all()
+        updated = 0
+        for task in tasks:
+            if task.get('name', '').lower() == 'conform':
+                continue
+            task['status'] = status_entity
+            updated += 1
+        if updated:
+            self.session.commit()
+            logger.debug(f"Re-applied status '{status_name}' to {updated} task(s) for shot {shot.get('name', '')}")
     
     # -------------------------------------------------------------------------
     # BATCH OPERATIONS
@@ -1533,6 +1546,7 @@ class FtrackManager:
                             video_path = self._find_video(video_dir, shot_name)
                             if video_path and self.create_version(shot, video_path):
                                 results['versions'] += 1
+                                self._reapply_task_statuses(shot, status)
                                 
                 except Exception as e:
                     results['errors'].append(f"Error creating shot {shot_name}: {str(e)}")
@@ -1633,6 +1647,7 @@ class FtrackManager:
                             if video_path:
                                 if self.create_version(shot, video_path):
                                     results['versions'] += 1
+                                    self._reapply_task_statuses(shot, status)
                 
                 except Exception as e:
                     error_msg = f"{shot_name}: {str(e)}"

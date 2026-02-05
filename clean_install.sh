@@ -85,14 +85,25 @@ fi
 echo ""
 echo "📦 Installing new version..."
 
-# Check if ZIP exists in current directory
-if [ -f "flame_ftrack_integration.zip" ]; then
-    ZIP_FILE="flame_ftrack_integration.zip"
-elif [ -f "$HOME/Downloads/flame_ftrack_integration.zip" ]; then
-    ZIP_FILE="$HOME/Downloads/flame_ftrack_integration.zip"
-else
-    echo "   ❌ File flame_ftrack_integration.zip not found!"
-    echo "   Place the ZIP in this directory or in ~/Downloads"
+# Check if ZIP exists (accept multiple names: repo with underscores or GitHub download with hyphens)
+ZIP_NAMES="flame_ftrack_integration.zip flame-ftrack-integration-main.zip flame-ftrack-integration.zip"
+ZIP_FILE=""
+for name in $ZIP_NAMES; do
+    if [ -f "$name" ]; then
+        ZIP_FILE="$name"
+        break
+    elif [ -f "$HOME/Downloads/$name" ]; then
+        ZIP_FILE="$HOME/Downloads/$name"
+        break
+    fi
+done
+
+if [ -z "$ZIP_FILE" ]; then
+    echo "   ❌ No project ZIP found!"
+    echo "   Place one of these in this directory or in ~/Downloads:"
+    echo "     flame_ftrack_integration.zip"
+    echo "     flame-ftrack-integration-main.zip  (from GitHub Download ZIP)"
+    echo "     flame-ftrack-integration.zip"
     exit 1
 fi
 
@@ -105,19 +116,30 @@ echo "   Extracting to: $TEMP_DIR"
 # Extract
 unzip -q "$ZIP_FILE" -d "$TEMP_DIR"
 
+# Detect source directory (GitHub ZIP has one top-level folder e.g. flame-ftrack-integration-main)
+SUBDIR_COUNT=$(find "$TEMP_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
+if [ "$SUBDIR_COUNT" -eq 1 ]; then
+    SOURCE_DIR=$(find "$TEMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -1)
+    echo "   Source folder: $(basename "$SOURCE_DIR")"
+else
+    SOURCE_DIR="$TEMP_DIR"
+fi
+
 # Copy to Flame directory
 echo "   Copying to: $FLAME_PYTHON/flame_ftrack_integration"
 sudo mkdir -p "$FLAME_PYTHON/flame_ftrack_integration"
-sudo cp -r "$TEMP_DIR"/* "$FLAME_PYTHON/flame_ftrack_integration/"
+sudo cp -r "$SOURCE_DIR"/* "$FLAME_PYTHON/flame_ftrack_integration/"
 
 # Copy hook file
 echo "   Copying hook to: $FLAME_HOOKS"
-sudo cp "$TEMP_DIR/flame_ftrack_hook.py" "$FLAME_HOOKS/"
+sudo cp "$SOURCE_DIR/flame_ftrack_hook.py" "$FLAME_HOOKS/"
 
 # Copy presets
 echo "   Copying presets to: $PRESET_DIR"
 sudo mkdir -p "$PRESET_DIR"
-sudo cp "$TEMP_DIR/presets/"*.xml "$PRESET_DIR/" 2>/dev/null
+if [ -d "$SOURCE_DIR/presets" ]; then
+    sudo cp "$SOURCE_DIR/presets/"*.xml "$PRESET_DIR/" 2>/dev/null || true
+fi
 
 # Set permissions
 echo "   Setting permissions..."
